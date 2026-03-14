@@ -1,18 +1,18 @@
 import 'dart:convert';
-import 'dart:typed_data'; // <-- MUST HAVE THIS FOR BINARY DECODING
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 class LiveApiService {
-  // Put a NEW API key here, and do not push it to GitHub!
-  static const String _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+  static final String _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
 
   static final Uri _uri = Uri.parse(
       'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=$_apiKey');
 
   WebSocketChannel? _channel;
 
+  // 💥 THE FIX: Exactly ONE argument expected here!
   void connect(Function(String) onMessageReceived) {
     _channel = WebSocketChannel.connect(_uri);
     debugPrint("🔌 WebSocket Connection Opened");
@@ -20,7 +20,6 @@ class LiveApiService {
     _channel!.stream.listen(
       (message) {
         try {
-          // THE FIX: Decode the raw binary audio frames into text before parsing!
           String textMessage;
           if (message is Uint8List || message is List<int>) {
             textMessage = utf8.decode(message as List<int>);
@@ -33,23 +32,20 @@ class LiveApiService {
           if (data['serverContent'] != null) {
             final sc = data['serverContent'];
 
-            // 1. Look for standard text parts
-            if (sc['modelTurn'] != null && sc['modelTurn']['parts'] != null) {
-              for (var part in sc['modelTurn']['parts']) {
-                if (part['text'] != null && part['text'].isNotEmpty) {
-                  onMessageReceived(part['text']);
-                }
+            if (sc['outputTranscription'] != null) {
+              final transcriptText = sc['outputTranscription']['text'];
+              if (transcriptText != null && transcriptText.isNotEmpty) {
+                onMessageReceived(transcriptText);
               }
             }
           }
         } catch (e) {
-          // Fail silently on weird audio chunks instead of crashing the app
           debugPrint("Stream Parse Error: $e");
         }
       },
       onError: (error) => debugPrint("WebSocket Error: $error"),
-      onDone: () => debugPrint(
-          "WebSocket Closed. Code: ${_channel!.closeCode}, Reason: ${_channel!.closeReason}"),
+      onDone: () =>
+          debugPrint("WebSocket Closed. Code: ${_channel!.closeCode}"),
     );
 
     _sendSetupMessage();
@@ -62,15 +58,23 @@ class LiveApiService {
         "generationConfig": {
           "responseModalities": ["AUDIO"]
         },
-        "outputAudioTranscription": {}
+        "outputAudioTranscription": {},
+        "systemInstruction": {
+          "parts": [
+            {
+              "text":
+                  "You are a concise, direct AI voice assistant. Answer directly in 1 short sentence. NEVER narrate your visual analysis."
+            }
+          ]
+        }
       }
     };
     _channel?.sink.add(jsonEncode(setupMsg));
   }
 
-  void streamCameraFrame(Uint8List imageBytes) {
+  // BUILD SCENIC MEMORY
+  void streamVisualMemory(Uint8List imageBytes) {
     if (_channel == null) return;
-
     final realtimeInputMsg = {
       "realtimeInput": {
         "mediaChunks": [
@@ -78,8 +82,38 @@ class LiveApiService {
         ]
       }
     };
-
     _channel?.sink.add(jsonEncode(realtimeInputMsg));
+  }
+
+  // TRIGGER ACTION
+  void sendMultimodalPrompt(String spokenText, Uint8List? imageBytes) {
+    if (_channel == null || spokenText.isEmpty) return;
+
+    List<Map<String, dynamic>> promptParts = [
+      {"text": spokenText}
+    ];
+
+    if (imageBytes != null) {
+      promptParts.add({
+        "inlineData": {
+          "mimeType": "image/jpeg",
+          "data": base64Encode(imageBytes)
+        }
+      });
+    }
+
+    final clientContent = {
+      "clientContent": {
+        "turns": [
+          {"role": "user", "parts": promptParts}
+        ],
+        "turnComplete": true
+      }
+    };
+
+    _channel?.sink.add(jsonEncode(clientContent));
+    debugPrint(
+        "🗣️ Sent Multimodal Prompt (with Image: ${imageBytes != null})");
   }
 
   void disconnect() {
