@@ -45,6 +45,7 @@ dependencies:
   audioplayers: ^5.2.1
   flutter_dotenv: ^6.0.0
   speech_to_text: ^6.6.0
+  tflite_flutter: ^0.10.4
 
 dev_dependencies:
   flutter_test:
@@ -70,6 +71,8 @@ flutter:
 
   assets:
     - .env
+    - assets/mobilenet_v1_1.0_224_quant.tflite
+    - assets/labels.txt
 
   # To add assets to your application, add an assets section, like this:
   # assets:

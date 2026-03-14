@@ -5,6 +5,7 @@ import 'package:camera/camera.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import '../data/live_api_service.dart';
+import '../data/mock_edge_detector.dart';
 
 class VoiceAgentScreen extends StatefulWidget {
   final List<CameraDescription> cameras;
@@ -17,16 +18,21 @@ class VoiceAgentScreen extends StatefulWidget {
 class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProviderStateMixin {
   late CameraController _cameraController;
   final LiveApiService _liveService = LiveApiService();
+  
+  // 1. Initialize our local Edge AI Simulator
+  final MockEdgeDetector _edgeDetector = MockEdgeDetector();
+  
   late stt.SpeechToText _speech;
-  Timer? _visualMemoryTimer;
+  Timer? _edgeInferenceTimer;
   
   final FlutterTts _flutterTts = FlutterTts();
 
   bool _isCameraReady = false;
   bool _isListening = false;
   bool _isAiSpeaking = false;
+  bool _isCloudProcessing = false; // Prevents the Edge AI from spamming the Cloud AI
   
-  String _userText = "Hold the button, point the camera, and speak...";
+  String _userText = "Hold to speak, or let the Edge AI scan...";
   String _aiSubtitle = "";
   String _ttsBuffer = "";
   
@@ -38,27 +44,23 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
     _speech = stt.SpeechToText();
     _pulseController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800))..repeat(reverse: true);
 
-    // TTS Setup
     _flutterTts.setLanguage("en-US");
     _flutterTts.setSpeechRate(0.5);
     _flutterTts.setQueueMode(1);
 
-    // Initialize Camera
     _cameraController = CameraController(widget.cameras[0], ResolutionPreset.low);
     _cameraController.initialize().then((_) {
       if (!mounted) return;
       setState(() => _isCameraReady = true);
 
-      // Connect to Gemini
       _liveService.connect((aiTextChunk) {
         if (!mounted) return;
         setState(() {
-          if (_aiSubtitle == "Thinking...") _aiSubtitle = "";
+          if (_aiSubtitle.startsWith("Edge AI") || _aiSubtitle == "Thinking...") _aiSubtitle = "";
           _aiSubtitle += aiTextChunk;
           _isAiSpeaking = true;
         });
 
-        // 💥 Buffered Audio for Zero Stutter
         _ttsBuffer += aiTextChunk;
         if (_ttsBuffer.contains(RegExp(r'[.!?\n]'))) {
           int splitIndex = _ttsBuffer.lastIndexOf(RegExp(r'[.!?\n]')) + 1;
@@ -68,11 +70,35 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
         }
       });
 
-      // 👁️ SCENIC MEMORY: Silently stream what the camera sees every 3 seconds
-      _visualMemoryTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-        if (!_cameraController.value.isTakingPicture && !_isListening) {
-          final image = await _cameraController.takePicture();
-          _liveService.streamVisualMemory(await image.readAsBytes());
+      // 💥 THE HYBRID LOOP: Local Edge Processing
+      // We process a frame locally every 500ms (2 FPS)
+      _edgeInferenceTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
+        // If the Cloud AI is currently talking, or you are holding the mic, pause the Edge AI
+        if (_cameraController.value.isTakingPicture || _isListening || _isCloudProcessing) return;
+        
+        final image = await _cameraController.takePicture();
+        final bytes = await image.readAsBytes();
+        
+        // 1. Run local inference (Zero Latency, Zero Cost)
+        String? detectedObject = _edgeDetector.detectObject(bytes);
+        
+        // 2. If the Edge AI finds something confident, trigger the Cloud Handoff!
+        if (detectedObject != null) {
+          setState(() {
+            _isCloudProcessing = true; // Lock the edge loop
+            _aiSubtitle = "Edge AI detected a $detectedObject! Waking up Cloud AI...";
+          });
+          
+          // 3. Send the image to the heavy Gemini Model for deep analysis
+          _liveService.sendMultimodalPrompt(
+            "My local Edge AI just detected a $detectedObject. Tell me a 1-sentence creative or interesting fact about this object based on what you see.", 
+            bytes
+          );
+
+          // Unlock the edge loop after 10 seconds so it can scan again
+          Future.delayed(const Duration(seconds: 10), () {
+            if (mounted) setState(() => _isCloudProcessing = false);
+          });
         }
       });
     });
@@ -94,24 +120,30 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
     setState(() => _isListening = false);
     _speech.stop();
     
-    if (_userText.isNotEmpty && _userText != "Hold the button, point the camera, and speak...") {
-      setState(() => _aiSubtitle = "Thinking...");
+    if (_userText.isNotEmpty && _userText != "Hold to speak, or let the Edge AI scan...") {
+      setState(() {
+        _aiSubtitle = "Thinking...";
+        _isCloudProcessing = true; // Pause edge scanning while you ask a manual question
+      });
       
-      // Snap a picture at the exact moment you ask a question
       Uint8List? imageBytes;
       if (_cameraController.value.isInitialized) {
         final image = await _cameraController.takePicture();
         imageBytes = await image.readAsBytes();
       }
       
-      // Send both Voice and Image together
       _liveService.sendMultimodalPrompt(_userText, imageBytes);
+
+      // Resume edge scanning after 10 seconds
+      Future.delayed(const Duration(seconds: 10), () {
+        if (mounted) setState(() => _isCloudProcessing = false);
+      });
     }
   }
 
   @override
   void dispose() {
-    _visualMemoryTimer?.cancel();
+    _edgeInferenceTimer?.cancel();
     _pulseController.dispose();
     _liveService.disconnect();
     _flutterTts.stop();
