@@ -1,16 +1,33 @@
-# gemini_lens
+# 👁️ Gemini Lens: Hybrid Edge-to-Cloud Multimodal Agent
 
-A new Flutter project.
+Gemini Lens is a real-time, voice-activated multimodal AI assistant built in Flutter. It replicates the complex stateful interactions of enterprise AI agents (like Gemini Live) by combining continuous on-device environmental scanning with low-latency conversational cloud responses.
 
-## Getting Started
+This project was built to demonstrate advanced mobile architecture, specifically focusing on **Hybrid Edge-to-Cloud ML pipelines**, **WebSocket streaming**, and **asynchronous hardware thread management**.
 
-This project is a starting point for a Flutter application.
+---
 
-A few resources to get you started if this is your first Flutter project:
+## 🧠 System Architecture
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+To minimize cloud compute costs, reduce network payloads, and preserve battery life, this project implements a **Hybrid Edge-to-Cloud Pipeline**.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```mermaid
+graph TD
+    classDef edge fill:#34A853,stroke:#188038,stroke-width:2px,color:white,font-weight:bold;
+    classDef cloud fill:#4285F4,stroke:#1A73E8,stroke-width:2px,color:white,font-weight:bold;
+    classDef ui fill:#FBBC05,stroke:#F29900,stroke-width:2px,color:black,font-weight:bold;
+
+    Camera["📷 Raw Camera Feed (60 FPS)"]:::ui
+    TFLite["⚙️ Edge AI: TensorFlow Lite\n(MobileNet Object Detection)"]:::edge
+    Trigger{"Confidence > 95%?"}:::edge
+    WebSocket["🔌 Bidirectional WebSocket\n(Gemini Live API)"]:::cloud
+    TTS["🔊 Native Text-to-Speech\n(Sentence Buffered)"]:::ui
+    UserVoice["🎙️ User Voice (Speech-to-Text)"]:::ui
+
+    Camera -->|2 FPS Polling| TFLite
+    TFLite --> Trigger
+    Trigger -->|Yes: Trigger Cloud Handoff| WebSocket
+    Trigger -->|No: Ignore Frame| TFLite
+    
+    UserVoice -->|Manual Override| WebSocket
+    
+    WebSocket -->|Fragmented JSON Stream| TTS
