@@ -124,8 +124,8 @@ class LiveApiService {
 
       // Send setup and wait for server to acknowledge it
       _sendSetupMessage();
-      await _setupCompleter!.future
-          .timeout(const Duration(seconds: 10), onTimeout: () {
+      await _setupCompleter!.future.timeout(const Duration(seconds: 10),
+          onTimeout: () {
         throw TimeoutException("Setup acknowledgement timed out after 10s");
       });
 
@@ -200,7 +200,7 @@ class LiveApiService {
           "parts": [
             {
               "text":
-                  "You are a concise, direct AI voice assistant. Answer directly in 1 short sentence. NEVER narrate your visual analysis."
+                  "You are a concise, direct AI voice assistant with excellent communication skills.  Answer in 1 short sentence unless the user asks for a deeper explanation.  When the user asks you to identify or guess something based on the camera image, briefly describe what you see (colors, text, shape) and then give your best guess.  If you are unsure, say so but still attempt a guess.  Do not include internal reasoning or step‑by‑step analysis; just state your observation and conclusion."
             }
           ]
         }
