@@ -1,57 +1,72 @@
+// lib/services/mediapipe_service_mobile.dart
+//
+// Stub used on Android & iOS. Fully self-contained.
+
 import 'dart:typed_data';
-import 'package:flutter/services.dart';
 
-class MediaPipeService {
-  static const MethodChannel _channel = MethodChannel('mediapipe_channel');
+// ========== Data Classes ==========
 
-  /// Initializes the native MediaPipe Hand Landmarker.
-  static Future<void> initialize() async {
-    await _channel.invokeMethod('initializeHandLandmarker');
+class HandLandmarks {
+  final int handIndex; // 0 = Left, 1 = Right
+  final List<Landmark> landmarks;
+
+  const HandLandmarks({
+    required this.handIndex,
+    required this.landmarks,
+  });
+
+  factory HandLandmarks.fromMap(Map<dynamic, dynamic> map) {
+    final handIndex = map['handIndex'] as int;
+    final landmarksList =
+        (map['landmarks'] as List).cast<Map<dynamic, dynamic>>();
+    final landmarks = landmarksList
+        .map((lm) => Landmark(
+              x: (lm['x'] as num).toDouble(),
+              y: (lm['y'] as num).toDouble(),
+              z: (lm['z'] as num).toDouble(),
+            ))
+        .toList();
+    return HandLandmarks(handIndex: handIndex, landmarks: landmarks);
   }
 
-  /// Processes a JPEG/PNG image frame and returns hand landmarks.
+  @override
+  String toString() =>
+      'HandLandmarks(handIndex: $handIndex, landmarks: ${landmarks.length})';
+}
+
+class Landmark {
+  final double x;
+  final double y;
+  final double z;
+
+  const Landmark({required this.x, required this.y, required this.z});
+
+  @override
+  String toString() =>
+      'Landmark(x: ${x.toStringAsFixed(4)}, '
+      'y: ${y.toStringAsFixed(4)}, '
+      'z: ${z.toStringAsFixed(4)})';
+}
+
+// ========== MediaPipeService Stub ==========
+
+class MediaPipeService {
+  static Future<void> initialize() async {
+    throw UnsupportedError(
+        'MediaPipeService is only supported on Flutter Web.');
+  }
+
   static Future<List<HandLandmarks>?> detectHands({
     required Uint8List frameBytes,
     required int width,
     required int height,
   }) async {
-    final result = await _channel.invokeMethod('detectHands', {
-      'bytes': frameBytes,
-      'width': width,
-      'height': height,
-    });
-    if (result == null) return null;
-    return (result as List)
-        .map((hand) => HandLandmarks.fromMap(hand as Map<dynamic, dynamic>))
-        .toList();
+    throw UnsupportedError(
+        'MediaPipeService is only supported on Flutter Web.');
   }
 
   static Future<void> close() async {
-    await _channel.invokeMethod('close');
+    throw UnsupportedError(
+        'MediaPipeService is only supported on Flutter Web.');
   }
-}
-
-// ========== Data Classes ==========
-
-class HandLandmarks {
-  final int handIndex;
-  final List<Landmark> landmarks;
-
-  HandLandmarks({required this.handIndex, required this.landmarks});
-
-  factory HandLandmarks.fromMap(Map<dynamic, dynamic> map) {
-    final handIndex = map['handIndex'] as int;
-    final landmarksList = (map['landmarks'] as List).cast<Map<dynamic, dynamic>>();
-    final landmarks = landmarksList.map((lm) => Landmark(
-          x: (lm['x'] as num).toDouble(),
-          y: (lm['y'] as num).toDouble(),
-          z: (lm['z'] as num).toDouble(),
-        )).toList();
-    return HandLandmarks(handIndex: handIndex, landmarks: landmarks);
-  }
-}
-
-class Landmark {
-  final double x, y, z;
-  Landmark({required this.x, required this.y, required this.z});
 }

@@ -3,10 +3,12 @@ import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:camera/camera.dart';
 import '../domain/agent_intent.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
 
 class GeminiService {
   // Replace with your actual API key!
-  static const String _apiKey = 'AIzaSyDYvv5O1dqym1XTiUpBN0ftWTNMSmGIlIo';
+  static final String _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
  
   static final _model = GenerativeModel(
     model: 'gemini-2.5-flash',

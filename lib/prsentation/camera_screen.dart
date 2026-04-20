@@ -16,7 +16,8 @@ class VoiceAgentScreen extends StatefulWidget {
   State<VoiceAgentScreen> createState() => _VoiceAgentScreenState();
 }
 
-class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProviderStateMixin {
+class _VoiceAgentScreenState extends State<VoiceAgentScreen>
+    with TickerProviderStateMixin {
   late CameraController _cameraController;
   final LiveApiService _liveService = LiveApiService();
 
@@ -31,9 +32,13 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
   bool _isCloudProcessing = false;
   bool _mediaPipeReady = false;
 
+  // Buffering the entire response from the AI
+  String _fullResponseBuffer = '';
+  Timer? _streamEndTimer;
+  bool _isStreaming = false;
+
   String _userText = "Hold to speak, or point at something...";
   String _aiSubtitle = "";
-  String _ttsBuffer = "";
   String _lastDetectedGesture = "";
 
   late AnimationController _pulseController;
@@ -42,19 +47,20 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
   void initState() {
     super.initState();
     _speech = stt.SpeechToText();
-    _pulseController = AnimationController(vsync: this, duration: const Duration(milliseconds: 800))
+    _pulseController = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 800))
       ..repeat(reverse: true);
 
     _flutterTts.setLanguage("en-US");
     _flutterTts.setSpeechRate(0.5);
     _flutterTts.setQueueMode(1);
 
-    _cameraController = CameraController(widget.cameras[0], ResolutionPreset.low);
+    _cameraController =
+        CameraController(widget.cameras[0], ResolutionPreset.low);
     _cameraController.initialize().then((_) async {
       if (!mounted) return;
       setState(() => _isCameraReady = true);
 
-      // Initialize MediaPipe Hand Landmarker (works on both web and mobile)
       try {
         await MediaPipeService.initialize();
         if (mounted) setState(() => _mediaPipeReady = true);
@@ -62,31 +68,31 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
         debugPrint("MediaPipe initialization failed: $e");
       }
 
-      _liveService.connect((aiTextChunk) {
+      // Connect to the live AI stream – buffer everything
+      await _liveService.connect((aiTextChunk) {
         if (!mounted) return;
-        setState(() {
-          // Clear placeholder messages when real AI response starts
-          if (_aiSubtitle.startsWith("Edge AI") ||
-              _aiSubtitle == "Thinking..." ||
-              _aiSubtitle.startsWith("You're pointing")) {
-            _aiSubtitle = "";
-          }
-          _aiSubtitle += aiTextChunk;
-          _isAiSpeaking = true;
-        });
 
-        _ttsBuffer += aiTextChunk;
-        if (_ttsBuffer.contains(RegExp(r'[.!?\n]'))) {
-          int splitIndex = _ttsBuffer.lastIndexOf(RegExp(r'[.!?\n]')) + 1;
-          String sentenceToSpeak = _ttsBuffer.substring(0, splitIndex);
-          _flutterTts.speak(sentenceToSpeak);
-          _ttsBuffer = _ttsBuffer.substring(splitIndex);
+        // Reset the end-of-stream timer on each new chunk
+        _streamEndTimer?.cancel();
+        _streamEndTimer = Timer(const Duration(milliseconds: 500), _finalizeResponse);
+
+        if (!_isStreaming) {
+          setState(() {
+            _isStreaming = true;
+            _isCloudProcessing = true;
+            _aiSubtitle = "Thinking...";
+          });
         }
+
+        // Accumulate raw chunks (including any reasoning)
+        _fullResponseBuffer += aiTextChunk;
       });
 
-      // 💥 HYBRID LOOP: Local Gesture Processing with MediaPipe
-      _edgeInferenceTimer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
-        if (_cameraController.value.isTakingPicture || _isListening || _isCloudProcessing) return;
+      _edgeInferenceTimer =
+          Timer.periodic(const Duration(milliseconds: 500), (_) async {
+        if (_cameraController.value.isTakingPicture ||
+            _isListening ||
+            _isCloudProcessing) return;
         if (!_mediaPipeReady) return;
 
         final image = await _cameraController.takePicture();
@@ -108,18 +114,14 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
           setState(() => _lastDetectedGesture = "");
         }
 
-        // Trigger cloud handoff when user performs a "pointing" gesture
         if (detectedGesture == "pointing") {
           setState(() {
             _isCloudProcessing = true;
             _aiSubtitle = "You're pointing! Asking Gemini...";
           });
 
-          final enhancedPrompt = _buildEnhancedPrompt(
-            "What am I pointing at?",
-            detectedGesture!,
-          );
-
+          final enhancedPrompt =
+              _buildEnhancedPrompt("What am I pointing at?", detectedGesture!);
           _liveService.sendMultimodalPrompt(enhancedPrompt, bytes);
 
           Future.delayed(const Duration(seconds: 8), () {
@@ -130,15 +132,100 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
     });
   }
 
+  // Called when the AI stream ends (no new chunks for 500ms)
+  void _finalizeResponse() {
+    if (!mounted) return;
+
+    // Extract the final answer by removing all reasoning content
+    final finalAnswer = _extractFinalAnswer(_fullResponseBuffer);
+
+    setState(() {
+      _isStreaming = false;
+      _isCloudProcessing = false;
+      _aiSubtitle = finalAnswer;
+    });
+
+    // Speak only the final, cleaned answer
+    if (finalAnswer.isNotEmpty) {
+      _flutterTts.speak(finalAnswer);
+      setState(() => _isAiSpeaking = true);
+      _flutterTts.setCompletionHandler(() {
+        if (mounted) setState(() => _isAiSpeaking = false);
+      });
+    }
+
+    // Reset buffer for next interaction
+    _fullResponseBuffer = '';
+    _streamEndTimer = null;
+  }
+
+  // Enhanced reasoning filter – removes all common thinking patterns
+  String _extractFinalAnswer(String raw) {
+    if (raw.isEmpty) return "I'm not sure how to answer that.";
+
+    // 1. Remove XML-like tags
+    String cleaned = raw.replaceAll(RegExp(r'<thinking>[\s\S]*?</thinking>', dotAll: true), '');
+    cleaned = cleaned.replaceAll(RegExp(r'\[THOUGHT\][\s\S]*?\[/THOUGHT\]', dotAll: true), '');
+    cleaned = cleaned.replaceAll(RegExp(r'\{.*?\}'), ''); // remove JSON-like blocks
+
+    // 2. Remove markdown italics and bold (often used for reasoning)
+    cleaned = cleaned.replaceAll(RegExp(r'\*[^*]*\*'), '');
+    cleaned = cleaned.replaceAll(RegExp(r'_[^_]*_'), '');
+
+    // 3. Remove common reasoning prefixes (case-insensitive, at start of string or after newline)
+    final reasoningPrefixes = [
+      r'^I see\b.*?\.\s*',
+      r'^I think\b.*?\.\s*',
+      r'^Let me\b.*?\.\s*',
+      r'^First,?\b.*?\.\s*',
+      r'^Based on (the )?image\b.*?\.\s*',
+      r'^The image shows\b.*?\.\s*',
+      r'^After analyzing\b.*?\.\s*',
+      r'^My analysis\b.*?\.\s*',
+      r'^Here is my reasoning\b.*?\.\s*',
+      r'^As an AI\b.*?\.\s*',
+    ];
+    for (final prefix in reasoningPrefixes) {
+      cleaned = cleaned.replaceFirst(RegExp(prefix, caseSensitive: false, dotAll: true), '');
+    }
+
+    // 4. If the text contains multiple sentences separated by periods, keep only the last one
+    //    (reasoning often appears before the final answer)
+    final sentences = cleaned.split(RegExp(r'(?<=[.!?])\s+'));
+    if (sentences.length > 1) {
+      // Heuristic: final answer is usually the last sentence
+      cleaned = sentences.last.trim();
+    }
+
+    // 5. Remove any leftover phrases like "I see", "I think" etc. anywhere in the text
+    cleaned = cleaned.replaceAll(RegExp(r'\b(I see|I think|Let me|First,?|Based on|The image shows|After analyzing|My analysis|Here is my reasoning)\b', caseSensitive: false), '');
+
+    // 6. Trim and clean up extra whitespace
+    cleaned = cleaned.trim();
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ');
+
+    if (cleaned.isEmpty) {
+      return "I'm not sure how to answer that.";
+    }
+    return cleaned;
+  }
+
+  // ----------------------------------------------------------------------
+  // Speech and UI helpers
+  // ----------------------------------------------------------------------
+
   void _startListening() async {
     if (await _speech.initialize()) {
       setState(() {
         _isListening = true;
         _isAiSpeaking = false;
         _aiSubtitle = "";
-        _ttsBuffer = "";
+        _fullResponseBuffer = "";
+        _isStreaming = false;
+        _streamEndTimer?.cancel();
       });
-      _speech.listen(onResult: (val) => setState(() => _userText = val.recognizedWords));
+      _speech.listen(
+          onResult: (val) => setState(() => _userText = val.recognizedWords));
     }
   }
 
@@ -146,7 +233,8 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
     setState(() => _isListening = false);
     _speech.stop();
 
-    if (_userText.isNotEmpty && _userText != "Hold to speak, or point at something...") {
+    if (_userText.isNotEmpty &&
+        _userText != "Hold to speak, or point at something...") {
       setState(() {
         _aiSubtitle = "Thinking...";
         _isCloudProcessing = true;
@@ -158,26 +246,18 @@ class _VoiceAgentScreenState extends State<VoiceAgentScreen> with TickerProvider
         imageBytes = await image.readAsBytes();
       }
 
-      // 🆕 Build a context‑aware prompt that includes the detected gesture
-      final enhancedPrompt = _buildEnhancedPrompt(_userText, _lastDetectedGesture);
+      final enhancedPrompt =
+          _buildEnhancedPrompt(_userText, _lastDetectedGesture);
       _liveService.sendMultimodalPrompt(enhancedPrompt, imageBytes);
-
-      Future.delayed(const Duration(seconds: 10), () {
-        if (mounted) setState(() => _isCloudProcessing = false);
-      });
     }
   }
 
-  /// Builds a prompt that includes gesture context for richer Gemini responses.
   String _buildEnhancedPrompt(String userQuery, String detectedGesture) {
-    if (detectedGesture.isEmpty) {
-      return userQuery;
-    }
-
+    if (detectedGesture.isEmpty) return userQuery;
     return '''
 The user asked: "$userQuery"
 
-[On‑device vision context]
+[On-device vision context]
 The camera currently detects a hand making a "$detectedGesture" gesture.
 
 Please respond naturally:
@@ -192,6 +272,7 @@ Keep your response short and conversational (1–2 sentences).
   @override
   void dispose() {
     _edgeInferenceTimer?.cancel();
+    _streamEndTimer?.cancel();
     _pulseController.dispose();
     _liveService.disconnect();
     _flutterTts.stop();
@@ -222,7 +303,10 @@ Keep your response short and conversational (1–2 sentences).
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Colors.black.withOpacity(0.2), Colors.black.withOpacity(0.9)],
+                colors: [
+                  Colors.black.withOpacity(0.2),
+                  Colors.black.withOpacity(0.9)
+                ],
               ),
             ),
           ),
@@ -243,13 +327,17 @@ Keep your response short and conversational (1–2 sentences).
                           shape: BoxShape.circle,
                           gradient: RadialGradient(
                             colors: _isAiSpeaking
-                                ? [Colors.blueAccent, Colors.purpleAccent.withOpacity(0.2)]
+                                ? [
+                                    Colors.blueAccent,
+                                    Colors.purpleAccent.withOpacity(0.2)
+                                  ]
                                 : [Colors.white24, Colors.transparent],
                           ),
                           boxShadow: _isAiSpeaking
                               ? [
                                   BoxShadow(
-                                    color: Colors.blueAccent.withOpacity(0.6 * _pulseController.value),
+                                    color: Colors.blueAccent.withOpacity(
+                                        0.6 * _pulseController.value),
                                     blurRadius: 60,
                                     spreadRadius: 20,
                                   )
@@ -260,7 +348,8 @@ Keep your response short and conversational (1–2 sentences).
                           child: Icon(
                             Icons.graphic_eq,
                             size: 60,
-                            color: _isAiSpeaking ? Colors.white : Colors.white30,
+                            color:
+                                _isAiSpeaking ? Colors.white : Colors.white30,
                           ),
                         ),
                       );
@@ -283,7 +372,9 @@ Keep your response short and conversational (1–2 sentences).
                           fontSize: 24,
                           fontWeight: FontWeight.w400,
                           height: 1.4,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 10)],
+                          shadows: [
+                            Shadow(color: Colors.black, blurRadius: 10)
+                          ],
                         ),
                       ),
                     ),
@@ -291,7 +382,8 @@ Keep your response short and conversational (1–2 sentences).
                   const Spacer(),
                   Text(
                     _userText,
-                    style: const TextStyle(color: Colors.white54, fontSize: 16),
+                    style:
+                        const TextStyle(color: Colors.white54, fontSize: 16),
                   ),
                   const SizedBox(height: 20),
                   GestureDetector(
